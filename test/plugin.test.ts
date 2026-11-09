@@ -149,7 +149,7 @@ describe("key gate", () => {
       Effect.gen(function* () {
         const host = yield* makeHost()
         // The startup read reports no key, then the key arrives. The watcher must see the event, and its newer read
-        // must not be overwritten by the stale startup one (the refresh lock).
+        // must not be overwritten by the stale startup one (the lock around lookups and reloads).
         host.onActive = () => host.connect(KEY)
         yield* plugin.effect(host.ctx)
         yield* eventually(() => host.providers().length === 1)
@@ -360,11 +360,64 @@ describe("key watcher failures", () => {
     const { logs, layer } = captureLogs()
     return run(
       Effect.gen(function* () {
-        yield* exhaustRetries(undefined, (host) => host.connect(KEY))
+        const host = yield* loaded(undefined)
+        host.failReload = 4
+        yield* host.connect(KEY)
+        yield* settle
+        expect(host.failReload).toBe(3)
+        for (const [wait, left] of [[1000, 3], [2000, 2], [4000, 1]] as const) {
+          yield* TestClock.adjust(`${wait - 1} millis`)
+          yield* settle
+          expect(host.failReload).toBe(left)
+          yield* TestClock.adjust("1 millis")
+          yield* settle
+          expect(host.failReload).toBe(left - 1)
+        }
+        yield* TestClock.adjust("1 minute")
+        yield* settle
+        expect(host.activeCalls()).toBe(5)
+        expect(host.reloads()).toBe(0)
         expect(logs.map((log) => log.message)).toEqual(Array(4).fill("Nimble could not apply an API key change"))
       }).pipe(Effect.provide(layer), Effect.provide(TestClock.layer())),
     )
   })
+
+  // OpenCode's reload can rebuild web search and then fail while notifying, and another plugin's reload rebuilds it
+  // too, so after a failed reload web search may already show the new answer. When the key then flips back before
+  // the retry, the retry must still reload.
+  it("reloads on the retry when a key added during a failed reload is removed before the retry", () =>
+    run(
+      Effect.gen(function* () {
+        const host = yield* loaded(undefined)
+        host.failReload = 1
+        yield* host.connect(KEY)
+        yield* settle
+        yield* host.connect(undefined)
+        yield* settle
+        expect(host.reloads()).toBe(0)
+        yield* TestClock.adjust("1 second")
+        yield* settle
+        expect(host.reloads()).toBe(1)
+        expect(host.providers()).toEqual([])
+      }).pipe(Effect.provide(TestClock.layer())),
+    ))
+
+  it("reloads on the retry when a key removed during a failed reload comes back before the retry", () =>
+    run(
+      Effect.gen(function* () {
+        const host = yield* loaded(KEY)
+        host.failReload = 1
+        yield* host.connect(undefined)
+        yield* settle
+        yield* host.connect("second-key")
+        yield* settle
+        expect(host.reloads()).toBe(0)
+        yield* TestClock.adjust("1 second")
+        yield* settle
+        expect(host.reloads()).toBe(1)
+        expect(host.providers().map((provider) => provider.id)).toEqual(["nimble"])
+      }).pipe(Effect.provide(TestClock.layer())),
+    ))
 
   it("reloads on the next event after a failed reload for an added key, though the key is still there", () =>
     run(

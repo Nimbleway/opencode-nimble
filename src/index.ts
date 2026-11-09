@@ -29,9 +29,10 @@ export default Plugin.define({
       // `random` web search only moves on after an HTTP 429, so a provider that cannot search without a key
       // would fail every search in a session that picked it. Register only while a key is connected.
       const connected = { current: false }
-      // Whether a key was connected when web search last loaded. It changes only once a reload succeeds, so a failed
-      // reload is tried again even when the next event finds the same answer.
-      const applied = { current: false }
+      // The answer this plugin last applied: the startup answer, then each successful reload's. It is unknown after a
+      // failed reload, since OpenCode may have rebuilt web search before the reload failed, so the next try reloads
+      // whatever the lookup finds.
+      const applied: { current: boolean | undefined } = { current: false }
       // One lookup and reload at a time, so an older answer never lands after a newer one.
       const lock = yield* Semaphore.make(1)
       const lookup = ctx.integration.connection.active(id).pipe(
@@ -42,6 +43,7 @@ export default Plugin.define({
         yield* lookup
         const answer = connected.current
         if (answer === applied.current) return
+        applied.current = undefined
         yield* ctx.websearch.reload()
         applied.current = answer
       }).pipe(lock.withPermits(1))
@@ -83,7 +85,7 @@ export default Plugin.define({
       })
       yield* watch.pipe(Effect.forkScoped({ startImmediately: true }))
 
-      // Web search loads this transform once the plugin has loaded, with the answer read here.
+      // Web search runs this transform once the plugin has loaded and on every reload, with the latest answer.
       yield* Effect.gen(function* () {
         yield* lookup
         yield* ctx.websearch.transform((editor) => {
