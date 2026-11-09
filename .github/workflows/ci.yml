@@ -24,5 +24,8 @@ jobs:
 
       - run: pnpm test
 
-      # pnpm install builds dist through the prepare script. Fails if the package would ship without its entry.
+      # Fails if the package would ship without its entry.
       - run: pnpm pack --dry-run | grep -q dist/index.js
+
+      # Fails if package.json exports don't resolve to a built entry with the plugin's default export.
+      - run: node --input-type=module -e 'const m = await import("@nimble-way/opencode"); if (m.default?.id !== "nimble") process.exit(1)'

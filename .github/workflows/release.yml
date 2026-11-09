@@ -47,4 +47,5 @@ jobs:
             exit 1
           fi
 
-      - run: npm publish --access public --provenance
+      # A pre-release (e.g. 0.2.0-beta.1) goes to the next tag; npm refuses to publish one without --tag.
+      - run: npm publish --access public --provenance --tag ${{ github.event.release.prerelease && 'next' || 'latest' }}

@@ -23,7 +23,8 @@
     "tool"
   ],
   "files": [
-    "dist"
+    "dist",
+    "src"
   ],
   "exports": {
     ".": {
