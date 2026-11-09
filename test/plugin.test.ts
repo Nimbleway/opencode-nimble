@@ -385,7 +385,7 @@ describe("key watcher failures", () => {
   // OpenCode's reload can rebuild web search and then fail while notifying, and another plugin's reload rebuilds it
   // too, so after a failed reload web search may already show the new answer. When the key then flips back before
   // the retry, the retry must still reload.
-  it("reloads on the retry when a key added during a failed reload is removed before the retry", () =>
+  it("reloads on the retry when the key is removed after its add failed to reload", () =>
     run(
       Effect.gen(function* () {
         const host = yield* loaded(undefined)
@@ -402,7 +402,7 @@ describe("key watcher failures", () => {
       }).pipe(Effect.provide(TestClock.layer())),
     ))
 
-  it("reloads on the retry when a key removed during a failed reload comes back before the retry", () =>
+  it("reloads on the retry when the key comes back after its removal failed to reload", () =>
     run(
       Effect.gen(function* () {
         const host = yield* loaded(KEY)
