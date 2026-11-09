@@ -23,3 +23,6 @@ jobs:
       - run: pnpm run typecheck
 
       - run: pnpm test
+
+      # pnpm install builds dist through the prepare script. Fails if the package would ship without its entry.
+      - run: pnpm pack --dry-run | grep -q dist/index.js
