@@ -39,11 +39,19 @@ export interface FakeHost {
   readonly activeCalls: () => number
   /** Runs once, right after the next active-connection read returns its answer. */
   onActive?: () => Effect.Effect<void>
+  /** How many of the next active-connection reads fail, like a lookup that breaks inside OpenCode. */
+  failActive: number
+  /** Ends every current event subscription with an error. */
+  readonly failSubscriptions: () => Effect.Effect<void>
+  /** How many event subscriptions the plugin has started. */
+  readonly subscriptions: () => number
 }
 
 export const makeHost = (initial?: { key?: string }) =>
   Effect.gen(function* () {
-    const events = yield* PubSub.unbounded<HostEvent>()
+    // A "fault" entry ends every subscription that sees it with an error.
+    const events = yield* PubSub.unbounded<HostEvent | "fault">()
+    let subscriptions = 0
     const integrationTransforms: Array<(editor: IntegrationEditor) => void> = []
     const websearchTransforms: Array<(editor: WebSearchEditor) => void> = []
     const credentials = new Map<string, string>()
@@ -155,6 +163,9 @@ export const makeHost = (initial?: { key?: string }) =>
       },
       reloads: () => reloads,
       activeCalls: () => activeCalls,
+      failActive: 0,
+      failSubscriptions: () => PubSub.publish(events, "fault").pipe(Effect.asVoid),
+      subscriptions: () => subscriptions,
       ctx: undefined as unknown as Context,
     }
 
@@ -172,6 +183,10 @@ export const makeHost = (initial?: { key?: string }) =>
           active: (integrationID: string) =>
             Effect.gen(function* () {
               activeCalls++
+              if (host.failActive > 0) {
+                host.failActive--
+                return yield* Effect.die(new Error("connection lookup failed"))
+              }
               const result = active(integrationID)
               const hook = host.onActive
               host.onActive = undefined
@@ -182,8 +197,16 @@ export const makeHost = (initial?: { key?: string }) =>
         },
       },
       event: {
+        // Like OpenCode's bus, each subscription starts when its stream starts and sees only later events.
         subscribe: (input?: { types?: ReadonlyArray<string> }) =>
-          Stream.fromPubSub(events).pipe(Stream.filter((event) => !input?.types || input.types.includes(event.type))),
+          Stream.suspend(() => {
+            subscriptions++
+            return Stream.fromPubSub(events).pipe(
+              Stream.mapEffect((event) =>
+                event === "fault" ? Effect.fail(new Error("event stream lost")) : Effect.succeed(event),
+              ),
+            )
+          }).pipe(Stream.filter((event) => !input?.types || input.types.includes(event.type))),
       },
       websearch: {
         transform: (callback: (editor: WebSearchEditor) => void) =>
@@ -199,11 +222,11 @@ export const makeHost = (initial?: { key?: string }) =>
   })
 
 /** Waits for the plugin's event fiber to catch up, since events arrive asynchronously. */
-export const eventually = (check: () => boolean) =>
+export const eventually = (check: () => boolean, seconds = 1) =>
   Effect.gen(function* () {
-    for (let attempt = 0; attempt < 200; attempt++) {
+    for (let attempt = 0; attempt < seconds * 200; attempt++) {
       if (check()) return
       yield* Effect.sleep("5 millis")
     }
-    throw new Error("condition not met within 1 second")
+    throw new Error(`condition not met within ${seconds} seconds`)
   })
