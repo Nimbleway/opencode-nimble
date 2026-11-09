@@ -59,8 +59,8 @@ export default Plugin.define({
           if (catchUp) yield* update
           return yield* Fiber.join(watcher)
         })
-      // If the subscription fails or is interrupted from outside, resubscribe with a capped backoff. The loop ends
-      // when OpenCode ends the stream; unloading the plugin interrupts it at once, even mid-sleep or mid-lookup.
+      // If OpenCode fails or interrupts the subscription, resubscribe with a capped backoff. The loop ends when
+      // OpenCode ends the stream normally; unloading the plugin interrupts it at once, even mid-sleep or mid-lookup.
       const watch = Effect.gen(function* () {
         for (let attempt = 0; ; attempt++) {
           if (attempt > 0) yield* Effect.sleep(resubscribeDelay(attempt))

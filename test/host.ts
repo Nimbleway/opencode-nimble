@@ -51,14 +51,20 @@ export interface FakeHost {
   readonly failSubscriptions: () => Effect.Effect<void>
   /** Interrupts every current event subscription from the host's side. */
   readonly interruptSubscriptions: () => Effect.Effect<void>
+  /** Ends every current event subscription normally, as OpenCode's bus does when it shuts down. */
+  readonly endSubscriptions: () => Effect.Effect<void>
+  /** How many hung active-connection reads were interrupted. */
+  readonly hungInterrupted: () => number
   /** How many event subscriptions the plugin has started. */
   readonly subscriptions: () => number
 }
 
 export const makeHost = (initial?: { key?: string }) =>
   Effect.gen(function* () {
-    // A "fault" entry ends every subscription that sees it with an error, an "interrupt" entry interrupts it.
-    const events = yield* PubSub.unbounded<HostEvent | "fault" | "interrupt">()
+    // Control entries for every subscription that sees them: "fault" fails it, "interrupt" interrupts it and "end"
+    // ends it normally.
+    const events = yield* PubSub.unbounded<HostEvent | "fault" | "interrupt" | "end">()
+    let hungInterrupted = 0
     let subscriptions = 0
     const integrationTransforms: Array<(editor: IntegrationEditor) => void> = []
     const websearchTransforms: Array<(editor: WebSearchEditor) => void> = []
@@ -177,6 +183,8 @@ export const makeHost = (initial?: { key?: string }) =>
       failReload: 0,
       failSubscriptions: () => PubSub.publish(events, "fault").pipe(Effect.asVoid),
       interruptSubscriptions: () => PubSub.publish(events, "interrupt").pipe(Effect.asVoid),
+      endSubscriptions: () => PubSub.publish(events, "end").pipe(Effect.asVoid),
+      hungInterrupted: () => hungInterrupted,
       subscriptions: () => subscriptions,
       ctx: undefined as unknown as Context,
     }
@@ -203,7 +211,8 @@ export const makeHost = (initial?: { key?: string }) =>
                 host.interruptActive--
                 return yield* Effect.interrupt
               }
-              if (host.hangActive) return yield* Effect.never
+              if (host.hangActive)
+                return yield* Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(() => void hungInterrupted++)))
               const result = active(integrationID)
               const hook = host.onActive
               host.onActive = undefined
@@ -219,6 +228,7 @@ export const makeHost = (initial?: { key?: string }) =>
           Stream.suspend(() => {
             subscriptions++
             return Stream.fromPubSub(events).pipe(
+              Stream.takeWhile((event) => event !== "end"),
               Stream.mapEffect((event) =>
                 event === "fault"
                   ? Effect.fail(new Error("event stream lost"))
