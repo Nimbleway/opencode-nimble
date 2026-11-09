@@ -1,7 +1,7 @@
 // A stand-in for the slice of OpenCode's plugin host this plugin uses: integrations, connections, events and
 // web search. It replays transforms on every read and keeps state per integration ID, as OpenCode does.
 import type { Plugin } from "@opencode/plugin/effect"
-import { Effect, Queue, Stream } from "effect"
+import { Effect, PubSub, Stream } from "effect"
 
 type Context = Parameters<Plugin.Plugin["effect"]>[0]
 type IntegrationEditor = Parameters<Parameters<Context["integration"]["transform"]>[0]>[0]
@@ -37,15 +37,35 @@ export interface FakeHost {
   readonly reloads: () => number
   /** How many times the plugin asked for an active connection. */
   readonly activeCalls: () => number
+  /** Runs once, right after the next active-connection read returns its answer. */
+  onActive?: () => Effect.Effect<void>
 }
 
 export const makeHost = (initial?: { key?: string }) =>
   Effect.gen(function* () {
-    const events = yield* Queue.unbounded<HostEvent>()
+    const events = yield* PubSub.unbounded<HostEvent>()
     const integrationTransforms: Array<(editor: IntegrationEditor) => void> = []
     const websearchTransforms: Array<(editor: WebSearchEditor) => void> = []
     const credentials = new Map<string, string>()
-    if (initial?.key !== undefined) credentials.set("nimble", initial.key)
+    // Like OpenCode, every saved key gets its own credential ID; replacing a key adds a credential and activates it.
+    const saved = new Map<string, string>()
+    const activeIDs = new Map<string, string>()
+    let nextID = 1
+    const save = (integrationID: string, key: string | undefined) => {
+      if (key === undefined) {
+        const id = activeIDs.get(integrationID)
+        if (id) saved.delete(id)
+        activeIDs.delete(integrationID)
+        credentials.delete(integrationID)
+        return null
+      }
+      const id = `cred_${nextID++}`
+      saved.set(id, key)
+      activeIDs.set(integrationID, id)
+      credentials.set(integrationID, key)
+      return id
+    }
+    if (initial?.key !== undefined) save("nimble", initial.key)
     let reloads = 0
     let activeCalls = 0
 
@@ -87,8 +107,8 @@ export const makeHost = (initial?: { key?: string }) =>
 
     // Like OpenCode: a saved credential comes first, then an env variable the integration's env method names.
     const active = (integrationID: string): Connection | undefined => {
-      if (credentials.has(integrationID))
-        return { type: "credential", id: `cred_${integrationID}`, label: integrationID, method: "key" }
+      const credentialID = activeIDs.get(integrationID)
+      if (credentialID) return { type: "credential", id: credentialID, label: integrationID, method: "key" }
       const name = integrations()
         .get(integrationID)
         ?.methods.flatMap((method) => (method.type === "env" ? method.names : []))
@@ -101,8 +121,7 @@ export const makeHost = (initial?: { key?: string }) =>
         const key = host.env.get(connection.name)
         return key === undefined ? undefined : { type: "key" as const, key }
       }
-      const integrationID = connection.id.startsWith("cred_") ? connection.id.slice("cred_".length) : undefined
-      const key = integrationID === undefined ? undefined : credentials.get(integrationID)
+      const key = saved.get(connection.id)
       return key === undefined ? undefined : { type: "key" as const, key }
     }
 
@@ -113,19 +132,17 @@ export const makeHost = (initial?: { key?: string }) =>
         return credentials.get("nimble")
       },
       set key(key) {
-        if (key === undefined) credentials.delete("nimble")
-        else credentials.set("nimble", key)
+        save("nimble", key)
       },
       connect: (key, integrationID = "nimble") =>
         Effect.suspend(() => {
-          if (key === undefined) credentials.delete(integrationID)
-          else credentials.set(integrationID, key)
-          return Queue.offer(events, {
+          const credentialID = save(integrationID, key)
+          return PubSub.publish(events, {
             type: "credential.switched",
-            data: { integrationID, credentialID: key === undefined ? null : `cred_${integrationID}` },
+            data: { integrationID, credentialID },
           })
         }).pipe(Effect.asVoid),
-      publish: (event) => Queue.offer(events, event).pipe(Effect.asVoid),
+      publish: (event) => PubSub.publish(events, event).pipe(Effect.asVoid),
       integrations,
       providers: () => {
         const providers: WebSearchDefinition[] = []
@@ -153,16 +170,20 @@ export const makeHost = (initial?: { key?: string }) =>
         reload: () => Effect.void,
         connection: {
           active: (integrationID: string) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
               activeCalls++
-              return active(integrationID)
+              const result = active(integrationID)
+              const hook = host.onActive
+              host.onActive = undefined
+              if (hook) yield* hook()
+              return result
             }),
           resolve: (connection: Connection) => Effect.sync(() => resolve(connection)),
         },
       },
       event: {
         subscribe: (input?: { types?: ReadonlyArray<string> }) =>
-          Stream.fromQueue(events).pipe(Stream.filter((event) => !input?.types || input.types.includes(event.type))),
+          Stream.fromPubSub(events).pipe(Stream.filter((event) => !input?.types || input.types.includes(event.type))),
       },
       websearch: {
         transform: (callback: (editor: WebSearchEditor) => void) =>

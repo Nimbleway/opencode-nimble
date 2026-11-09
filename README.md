@@ -30,8 +30,9 @@ Or add it to `plugins` in your `opencode.json(c)`:
 
 Run `/connect` in OpenCode, choose **Nimble** and enter your key. OpenCode stores it with your other credentials.
 
-Or set `NIMBLE_API_KEY` on the server that runs OpenCode. `opencode` connects to a shared background server, which
-only sees variables in its managed environment. Add the key there:
+Or set `NIMBLE_API_KEY` on the server that runs OpenCode. `opencode` connects to a shared background server that
+keeps the environment it started with, so a variable you export later doesn't reach it. Add the key to the server's
+managed environment instead:
 
 ```bash
 opencode service set env NIMBLE_API_KEY your-key
@@ -91,7 +92,7 @@ are billed. Your plan may differ, so check your Nimble account for the rate that
 ## Troubleshooting
 
 - **Nimble isn't in the provider list.** Check that a key is connected: `/connect` should show Nimble as connected.
-  A `NIMBLE_API_KEY` you export in your shell doesn't reach a background service that's already running. Set it with
+  A `NIMBLE_API_KEY` you export after the background service started doesn't reach it. Set it with
   `opencode service set env NIMBLE_API_KEY your-key` instead.
 - **"Web search authentication failed (HTTP 401)".** Nimble rejected the key. Connect a valid key with `/connect`.
 

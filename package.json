@@ -42,6 +42,14 @@
     "@opencode/plugin": ">=2.2.5 <3",
     "effect": "^4.0.6"
   },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": {
+      "optional": true
+    },
+    "effect": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@opencode/plugin": "^2.2.5",
     "@types/node": "^24.0.0",

@@ -144,6 +144,18 @@ describe("key gate", () => {
       }),
     ))
 
+  it("catches a key connected between subscribing and the first read", () =>
+    run(
+      Effect.gen(function* () {
+        const host = yield* makeHost()
+        // The startup read reports no key, then the key arrives. The watcher must see the event, and its newer read
+        // must not be overwritten by the stale startup one (the refresh lock).
+        host.onActive = () => host.connect(KEY)
+        yield* plugin.effect(host.ctx)
+        yield* eventually(() => host.providers().length === 1)
+      }),
+    ))
+
   it("stops watching for key changes when the plugin unloads", () =>
     Effect.runPromise(
       Effect.gen(function* () {

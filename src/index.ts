@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode/plugin/effect"
-import { Effect, Stream } from "effect"
+import { Effect, Semaphore, Stream } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { search } from "./search.js"
 
@@ -22,6 +22,8 @@ export default Plugin.define({
       // `random` web search only moves on after an HTTP 429, so a provider that cannot search without a key
       // would fail every search in a session that picked it. Register only while a key is connected.
       const connected = { current: false }
+      // One refresh at a time, so the startup read can never overwrite a newer answer from the watcher.
+      const lock = yield* Semaphore.make(1)
       // Reports whether the answer changed, so unrelated events don't reload web search.
       const refresh = ctx.integration.connection.active(id).pipe(
         Effect.map((connection) => {
@@ -29,6 +31,7 @@ export default Plugin.define({
           connected.current = connection !== undefined
           return previous !== connected.current
         }),
+        lock.withPermits(1),
       )
       // OpenCode publishes credential.switched whenever the active key changes, including the first add and the
       // last removal. An env key counts once the env method is registered, which integration.updated announces.
