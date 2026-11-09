@@ -205,8 +205,13 @@ describe("errors", () => {
   it("fails a 429 with the status OpenCode needs to move random search to another provider", () =>
     run(
       Effect.gen(function* () {
+        // A body that would parse as results, so only the status can fail the search.
         const { fetch } = fakeFetch(
-          () => new Response("Too Many Requests", { status: 429, headers: { "retry-after": "30" } }),
+          () =>
+            new Response(JSON.stringify({ results: [] }), {
+              status: 429,
+              headers: { "content-type": "application/json", "retry-after": "30" },
+            }),
         )
         const error = yield* searchWith(fetch).pipe(Effect.flip)
         expect(HttpClientError.isHttpClientError(error)).toBe(true)
