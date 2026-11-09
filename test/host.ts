@@ -41,16 +41,24 @@ export interface FakeHost {
   onActive?: () => Effect.Effect<void>
   /** How many of the next active-connection reads fail, like a lookup that breaks inside OpenCode. */
   failActive: number
+  /** How many of the next active-connection reads are interrupted by the host. */
+  interruptActive: number
+  /** Makes every later active-connection read hang. */
+  hangActive: boolean
+  /** How many of the next web search reloads fail. */
+  failReload: number
   /** Ends every current event subscription with an error. */
   readonly failSubscriptions: () => Effect.Effect<void>
+  /** Interrupts every current event subscription from the host's side. */
+  readonly interruptSubscriptions: () => Effect.Effect<void>
   /** How many event subscriptions the plugin has started. */
   readonly subscriptions: () => number
 }
 
 export const makeHost = (initial?: { key?: string }) =>
   Effect.gen(function* () {
-    // A "fault" entry ends every subscription that sees it with an error.
-    const events = yield* PubSub.unbounded<HostEvent | "fault">()
+    // A "fault" entry ends every subscription that sees it with an error, an "interrupt" entry interrupts it.
+    const events = yield* PubSub.unbounded<HostEvent | "fault" | "interrupt">()
     let subscriptions = 0
     const integrationTransforms: Array<(editor: IntegrationEditor) => void> = []
     const websearchTransforms: Array<(editor: WebSearchEditor) => void> = []
@@ -164,7 +172,11 @@ export const makeHost = (initial?: { key?: string }) =>
       reloads: () => reloads,
       activeCalls: () => activeCalls,
       failActive: 0,
+      interruptActive: 0,
+      hangActive: false,
+      failReload: 0,
       failSubscriptions: () => PubSub.publish(events, "fault").pipe(Effect.asVoid),
+      interruptSubscriptions: () => PubSub.publish(events, "interrupt").pipe(Effect.asVoid),
       subscriptions: () => subscriptions,
       ctx: undefined as unknown as Context,
     }
@@ -187,6 +199,11 @@ export const makeHost = (initial?: { key?: string }) =>
                 host.failActive--
                 return yield* Effect.die(new Error("connection lookup failed"))
               }
+              if (host.interruptActive > 0) {
+                host.interruptActive--
+                return yield* Effect.interrupt
+              }
+              if (host.hangActive) return yield* Effect.never
               const result = active(integrationID)
               const hook = host.onActive
               host.onActive = undefined
@@ -203,7 +220,11 @@ export const makeHost = (initial?: { key?: string }) =>
             subscriptions++
             return Stream.fromPubSub(events).pipe(
               Stream.mapEffect((event) =>
-                event === "fault" ? Effect.fail(new Error("event stream lost")) : Effect.succeed(event),
+                event === "fault"
+                  ? Effect.fail(new Error("event stream lost"))
+                  : event === "interrupt"
+                    ? Effect.interrupt
+                    : Effect.succeed(event),
               ),
             )
           }).pipe(Stream.filter((event) => !input?.types || input.types.includes(event.type))),
@@ -214,7 +235,15 @@ export const makeHost = (initial?: { key?: string }) =>
             websearchTransforms.push(callback)
             return registration
           }),
-        reload: () => Effect.sync(() => void reloads++),
+        reload: () =>
+          Effect.suspend(() => {
+            if (host.failReload > 0) {
+              host.failReload--
+              return Effect.die(new Error("web search reload failed"))
+            }
+            reloads++
+            return Effect.void
+          }),
       },
     }
     ;(host as { ctx: Context }).ctx = ctx as unknown as Context

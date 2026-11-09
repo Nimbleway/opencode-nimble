@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode/plugin/effect"
-import { Cause, Duration, Effect, Exit, Fiber, Semaphore, Stream } from "effect"
+import { Duration, Effect, Exit, Fiber, Semaphore, Stream } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { search } from "./search.js"
 
@@ -37,13 +37,12 @@ export default Plugin.define({
         }),
         lock.withPermits(1),
       )
-      // Handles one key change. A failure is logged and dropped, so later changes are still handled.
+      // Handles one key change. A failure in the lookup or the reload is logged and dropped, so later changes are
+      // still handled. Unloading the plugin interrupts this fiber itself, which no catch sees, so this only catches
+      // failures and interruptions coming from the host calls.
       const update = refresh.pipe(
         Effect.flatMap((changed) => (changed ? ctx.websearch.reload() : Effect.void)),
-        Effect.catchCauseIf(
-          (cause) => !Cause.hasInterruptsOnly(cause),
-          (cause) => Effect.logWarning("Nimble could not check its API key after a change", cause),
-        ),
+        Effect.catchCause((cause) => Effect.logWarning("Nimble could not apply an API key change", cause)),
       )
       // OpenCode publishes credential.switched whenever the active key changes, including the first add and the
       // last removal. An env key counts once the env method is registered, which integration.updated announces.
@@ -60,13 +59,13 @@ export default Plugin.define({
           if (catchUp) yield* update
           return yield* Fiber.join(watcher)
         })
-      // If the subscription fails, resubscribe with a capped backoff. It ends only when OpenCode ends the stream
-      // or the plugin unloads.
+      // If the subscription fails or is interrupted from outside, resubscribe with a capped backoff. The loop ends
+      // when OpenCode ends the stream; unloading the plugin interrupts it at once, even mid-sleep or mid-lookup.
       const watch = Effect.gen(function* () {
         for (let attempt = 0; ; attempt++) {
           if (attempt > 0) yield* Effect.sleep(resubscribeDelay(attempt))
           const exit = yield* Effect.exit(subscribe(attempt > 0))
-          if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) return
+          if (Exit.isSuccess(exit)) return
           yield* Effect.logWarning("Nimble lost its subscription to API key changes and will resubscribe", exit.cause)
         }
       })
