@@ -30,16 +30,24 @@ Or add it to `plugins` in your `opencode.json(c)`:
 
 Run `/connect` in OpenCode, choose **Nimble** and enter your key. OpenCode stores it with your other credentials.
 
-Or set `NIMBLE_API_KEY` in the environment OpenCode's server starts in:
+Or set `NIMBLE_API_KEY` on the server that runs OpenCode. `opencode` connects to a shared background server, which
+only sees variables in its managed environment. Add the key there:
 
 ```bash
-NIMBLE_API_KEY=your-key opencode
+opencode service set env NIMBLE_API_KEY your-key
+```
+
+This stops a running service, and the next OpenCode command starts it with the key. For a one-off private server, pass
+the key when starting standalone mode instead:
+
+```bash
+NIMBLE_API_KEY=your-key opencode --standalone
 ```
 
 A key saved with `/connect` takes precedence over `NIMBLE_API_KEY`.
 
-Nimble shows up as a web search provider only while a key is available. Add a key and it appears without a restart;
-remove it and Nimble leaves the list. That way OpenCode never picks Nimble for a search it can't run.
+Nimble shows up as a web search provider only while a key is available, so OpenCode never picks Nimble for a search
+it can't run. Connect a key with `/connect` and Nimble appears without a restart; remove it and Nimble leaves the list.
 
 ## Use Nimble for web search
 
@@ -66,6 +74,8 @@ Each search is one request to `https://sdk.nimbleway.com/v2/search` with:
 - your key in the `Authorization: Bearer` header
 - an `X-Client-Source: opencode` header, so Nimble can tell the request came from OpenCode
 - OpenCode's usual `User-Agent`
+- `traceparent` and `b3` trace headers, which effect's HTTP client adds to every request, as it does for OpenCode's
+  built-in providers
 
 Nimble returns the page text for each result in its `description` field, which the plugin passes to the model as the
 result's content. A search that takes longer than 25 seconds fails, like OpenCode's built-in providers.
@@ -80,14 +90,15 @@ are billed. Your plan may differ, so check your Nimble account for the rate that
 
 ## Troubleshooting
 
-- **Nimble isn't in the provider list.** Check that a key is connected: `/connect` should show Nimble as connected, or
-  `NIMBLE_API_KEY` must be set where OpenCode's server runs (a background service started earlier doesn't see a
-  variable you set later).
+- **Nimble isn't in the provider list.** Check that a key is connected: `/connect` should show Nimble as connected.
+  A `NIMBLE_API_KEY` you export in your shell doesn't reach a background service that's already running. Set it with
+  `opencode service set env NIMBLE_API_KEY your-key` instead.
 - **"Web search authentication failed (HTTP 401)".** Nimble rejected the key. Connect a valid key with `/connect`.
 
 ## Disable
 
-Remove `@nimble-way/opencode` from `plugins`, or add `"-nimble"` to disable it without uninstalling.
+Remove `@nimble-way/opencode` from `plugins`, or add `"-nimble"` after it (or in a higher-precedence config) to disable
+it without uninstalling.
 
 ## Development
 

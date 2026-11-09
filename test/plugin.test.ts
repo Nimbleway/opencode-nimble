@@ -1,4 +1,4 @@
-import { Effect, Fiber, Scope } from "effect"
+import { Effect, Exit, Fiber, Scope } from "effect"
 import { FetchHttpClient, HttpClientError } from "effect/http"
 import { TestClock } from "effect/testing"
 import { describe, expect, it } from "vitest"
@@ -63,7 +63,9 @@ describe("integration", () => {
     run(
       Effect.gen(function* () {
         const host = yield* loaded(undefined)
-        expect(host.integration()).toEqual({
+        const integrations = host.integrations()
+        expect([...integrations.keys()]).toEqual(["nimble"])
+        expect(integrations.get("nimble")).toEqual({
           name: "Nimble",
           methods: [{ type: "key" }, { type: "env", names: ["NIMBLE_API_KEY"] }],
         })
@@ -106,26 +108,52 @@ describe("key gate", () => {
     run(
       Effect.gen(function* () {
         const host = yield* loaded(undefined)
-        host.key = KEY
+        host.env.set("NIMBLE_API_KEY", KEY)
         yield* host.publish({ type: "integration.updated", data: {} })
         yield* eventually(() => host.reloads() === 1)
         expect(host.providers().map((provider) => provider.id)).toEqual(["nimble"])
       }),
     ))
 
-  it("does not reload web search for other integrations or unchanged keys", () =>
+  it("ignores credential events for other integrations", () =>
     run(
       Effect.gen(function* () {
         const host = yield* loaded(undefined)
-        host.key = KEY
-        yield* host.publish({ type: "credential.switched", data: { integrationID: "exa", credentialID: "cred_2" } })
-        // A later event for Nimble shows the earlier one was handled (events are processed in order).
-        yield* host.publish({ type: "integration.updated", data: {} })
-        yield* eventually(() => host.reloads() === 1)
-        yield* host.connect(KEY)
-        yield* host.publish({ type: "integration.updated", data: {} })
+        const before = host.activeCalls()
+        yield* host.connect("exa-key", "exa")
+        // Events are handled in order, so once this Nimble event is handled the Exa one has been too.
+        yield* host.publish({ type: "credential.switched", data: { integrationID: "nimble", credentialID: null } })
+        yield* eventually(() => host.activeCalls() >= before + 1)
         yield* Effect.sleep("50 millis")
-        expect(host.reloads()).toBe(1)
+        expect(host.activeCalls()).toBe(before + 1)
+        expect(host.reloads()).toBe(0)
+      }),
+    ))
+
+  it("does not reload web search when the key's presence doesn't change", () =>
+    run(
+      Effect.gen(function* () {
+        const host = yield* loaded(KEY)
+        const before = host.activeCalls()
+        yield* host.connect("another-key")
+        yield* host.publish({ type: "integration.updated", data: {} })
+        yield* eventually(() => host.activeCalls() >= before + 2)
+        yield* Effect.sleep("50 millis")
+        expect(host.reloads()).toBe(0)
+        expect(host.providers().map((provider) => provider.id)).toEqual(["nimble"])
+      }),
+    ))
+
+  it("stops watching for key changes when the plugin unloads", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const host = yield* makeHost()
+        const scope = yield* Scope.make()
+        yield* plugin.effect(host.ctx).pipe(Scope.provide(scope))
+        yield* Scope.close(scope, Exit.void)
+        yield* host.connect(KEY)
+        yield* Effect.sleep("100 millis")
+        expect(host.reloads()).toBe(0)
       }),
     ))
 })
@@ -160,6 +188,19 @@ describe("request", () => {
         host.key = "replacement-key"
         yield* host.providers()[0]!.execute({ query: "q" }).pipe(Effect.provideService(FetchHttpClient.Fetch, fetch))
         expect(requests[0]!.headers.authorization).toBe("Bearer replacement-key")
+      }),
+    ))
+
+  it("sends a NIMBLE_API_KEY key when nothing is saved with /connect", () =>
+    run(
+      Effect.gen(function* () {
+        const { fetch, requests } = fakeFetch(() => json(nimbleResults))
+        const host = yield* loaded(undefined)
+        host.env.set("NIMBLE_API_KEY", "env-key")
+        yield* host.publish({ type: "integration.updated", data: {} })
+        yield* eventually(() => host.providers().length === 1)
+        yield* host.providers()[0]!.execute({ query: "q" }).pipe(Effect.provideService(FetchHttpClient.Fetch, fetch))
+        expect(requests[0]!.headers.authorization).toBe("Bearer env-key")
       }),
     ))
 })
