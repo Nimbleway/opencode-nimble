@@ -2,7 +2,7 @@ import { Cause, Duration, Effect, Exit, Fiber, Logger, Scope } from "effect"
 import { FetchHttpClient, HttpClientError } from "effect/http"
 import { TestClock } from "effect/testing"
 import { describe, expect, it } from "vitest"
-import plugin, { endpoint, resubscribeDelay, TimeoutError } from "../src/index.js"
+import plugin, { endpoint, retryDelay, TimeoutError } from "../src/index.js"
 import { eventually, type FakeHost, makeHost } from "./host.js"
 
 const KEY = "test-key-not-real"
@@ -187,21 +187,31 @@ const captureLogs = () => {
 }
 
 describe("key watcher failures", () => {
-  it("keeps following key changes after a lookup fails", () => {
+  it("retries a failed lookup 1 second later and keeps following key changes", () => {
     const { logs, layer } = captureLogs()
     return run(
       Effect.gen(function* () {
         const host = yield* loaded(undefined)
         host.failActive = 1
         yield* host.connect(KEY)
-        yield* eventually(() => logs.some((log) => log.message === "Nimble could not apply an API key change"))
+        yield* settle
+        expect(logs.map((log) => log.message)).toEqual(["Nimble could not apply an API key change"])
         expect(host.providers()).toEqual([])
+        expect(host.reloads()).toBe(0)
+        yield* TestClock.adjust("999 millis")
+        yield* settle
+        expect(host.reloads()).toBe(0)
+        yield* TestClock.adjust("1 millis")
+        yield* settle
+        expect(host.providers().map((provider) => provider.id)).toEqual(["nimble"])
+        expect(host.reloads()).toBe(1)
 
-        yield* host.connect("second-key")
-        yield* eventually(() => host.providers().length === 1)
         yield* host.connect(undefined)
-        yield* eventually(() => host.providers().length === 0)
-      }).pipe(Effect.provide(layer)),
+        yield* settle
+        expect(host.providers()).toEqual([])
+        expect(host.reloads()).toBe(2)
+        expect(logs).toHaveLength(1)
+      }).pipe(Effect.provide(layer), Effect.provide(TestClock.layer())),
     )
   })
 
@@ -288,38 +298,99 @@ describe("key watcher failures", () => {
     )
   })
 
-  it("logs a lookup the host interrupts and keeps following key changes", () => {
+  it("logs a lookup the host interrupts and retries it", () => {
     const { logs, layer } = captureLogs()
     return run(
       Effect.gen(function* () {
         const host = yield* loaded(undefined)
         host.interruptActive = 1
         yield* host.connect(KEY)
-        yield* eventually(() => logs.some((log) => log.message === "Nimble could not apply an API key change"))
+        yield* settle
+        expect(logs.map((log) => log.message)).toEqual(["Nimble could not apply an API key change"])
         expect(host.providers()).toEqual([])
-        yield* host.connect("second-key")
-        yield* eventually(() => host.providers().length === 1)
-      }).pipe(Effect.provide(layer)),
+        yield* TestClock.adjust("1 second")
+        yield* settle
+        expect(host.providers().map((provider) => provider.id)).toEqual(["nimble"])
+        expect(host.reloads()).toBe(1)
+      }).pipe(Effect.provide(layer), Effect.provide(TestClock.layer())),
     )
   })
 
-  it("logs a failed reload and still reloads on the next change", () => {
+  it("logs a failed reload and retries it 1 second later", () => {
     const { logs, layer } = captureLogs()
     return run(
       Effect.gen(function* () {
         const host = yield* loaded(undefined)
         host.failReload = 1
         yield* host.connect(KEY)
-        yield* eventually(() => logs.length > 0)
+        yield* settle
+        expect(logs).toHaveLength(1)
         expect(logs[0]!.message).toBe("Nimble could not apply an API key change")
         expect(logs[0]!.cause).toContain("web search reload failed")
         expect(host.reloads()).toBe(0)
-        yield* host.connect(undefined)
-        yield* eventually(() => host.reloads() === 1)
+        yield* TestClock.adjust("1 second")
+        yield* settle
+        expect(host.reloads()).toBe(1)
+        expect(logs).toHaveLength(1)
         expect(JSON.stringify(logs)).not.toContain(KEY)
-      }).pipe(Effect.provide(layer)),
+      }).pipe(Effect.provide(layer), Effect.provide(TestClock.layer())),
     )
   })
+
+  // Every reload fails until the retries run out, then the next event finds the same answer as the failed one.
+  const exhaustRetries = (initial: string | undefined, change: (host: FakeHost) => Effect.Effect<void>) =>
+    Effect.gen(function* () {
+      const host = yield* loaded(initial)
+      host.failReload = 4
+      yield* change(host)
+      yield* settle
+      for (const wait of ["1 second", "2 seconds", "4 seconds"] as const) {
+        yield* TestClock.adjust(wait)
+        yield* settle
+      }
+      expect(host.failReload).toBe(0)
+      expect(host.reloads()).toBe(0)
+      yield* TestClock.adjust("1 minute")
+      yield* settle
+      expect(host.activeCalls()).toBe(5)
+      return host
+    })
+
+  it("retries a failed reload 1, 2 and 4 seconds later, then stops until the next event", () => {
+    const { logs, layer } = captureLogs()
+    return run(
+      Effect.gen(function* () {
+        yield* exhaustRetries(undefined, (host) => host.connect(KEY))
+        expect(logs.map((log) => log.message)).toEqual(Array(4).fill("Nimble could not apply an API key change"))
+      }).pipe(Effect.provide(layer), Effect.provide(TestClock.layer())),
+    )
+  })
+
+  it("reloads on the next event after a failed reload for an added key, though the key is still there", () =>
+    run(
+      Effect.gen(function* () {
+        const host = yield* exhaustRetries(undefined, (host) => host.connect(KEY))
+        yield* host.connect("second-key")
+        yield* settle
+        expect(host.reloads()).toBe(1)
+        // Web search is up to date now, so another event with a key doesn't reload it.
+        yield* host.publish({ type: "integration.updated", data: {} })
+        yield* settle
+        expect(host.activeCalls()).toBe(7)
+        expect(host.reloads()).toBe(1)
+      }).pipe(Effect.provide(TestClock.layer())),
+    ))
+
+  it("reloads on the next event after a failed reload for a removed key, though the key is still gone", () =>
+    run(
+      Effect.gen(function* () {
+        const host = yield* exhaustRetries(KEY, (host) => host.connect(undefined))
+        yield* host.publish({ type: "integration.updated", data: {} })
+        yield* settle
+        expect(host.reloads()).toBe(1)
+        expect(host.providers()).toEqual([])
+      }).pipe(Effect.provide(TestClock.layer())),
+    ))
 
   describe("unloading stops the watcher at once, without a log", () => {
     const unload = (setup: (host: FakeHost) => Effect.Effect<void>, hung = false) => {
@@ -348,6 +419,13 @@ describe("key watcher failures", () => {
     }
     it("while subscribed", () => unload(() => Effect.void))
     it("during the backoff sleep", () => unload((host) => host.failSubscriptions()))
+    it("while waiting to retry a failed reload", () =>
+      unload((host) =>
+        Effect.gen(function* () {
+          host.failReload = 1
+          yield* host.connect(KEY)
+        }),
+      ))
     it("with a lookup that hangs", () =>
       unload(
         (host) =>
@@ -374,8 +452,8 @@ describe("key watcher failures", () => {
     )
   })
 
-  it("waits 1 second before resubscribing, doubling up to 30 seconds", () => {
-    expect([1, 2, 3, 4, 5, 6, 7, 20].map((attempt) => Duration.toMillis(resubscribeDelay(attempt)))).toEqual(
+  it("waits 1 second before a retry or resubscription, doubling up to 30 seconds", () => {
+    expect([1, 2, 3, 4, 5, 6, 7, 20].map((attempt) => Duration.toMillis(retryDelay(attempt)))).toEqual(
       [1, 2, 4, 8, 16, 30, 30, 30].map((seconds) => seconds * 1000),
     )
   })

@@ -8,9 +8,12 @@ export { endpoint, timeout, TimeoutError } from "./search.js"
 export const id = "nimble"
 export const env = "NIMBLE_API_KEY"
 
-/** Waits before resubscribing to key changes: 1 second, doubling up to 30 seconds. */
-export const resubscribeDelay = (attempt: number) =>
+/** Waits before retrying a key change or resubscribing to key changes: 1 second, doubling up to 30 seconds. */
+export const retryDelay = (attempt: number) =>
   Duration.millis(Math.min(1000 * 2 ** Math.max(0, attempt - 1), 30_000))
+
+/** Retries of a key change that could not be applied, 1, 2 and 4 seconds apart. Later events try again too. */
+export const retries = 3
 
 export default Plugin.define({
   id: "nimble",
@@ -26,24 +29,33 @@ export default Plugin.define({
       // `random` web search only moves on after an HTTP 429, so a provider that cannot search without a key
       // would fail every search in a session that picked it. Register only while a key is connected.
       const connected = { current: false }
-      // One refresh at a time, so the startup read can never overwrite a newer answer from the watcher.
+      // Whether a key was connected when web search last loaded. It changes only once a reload succeeds, so a failed
+      // reload is tried again even when the next event finds the same answer.
+      const applied = { current: false }
+      // One lookup and reload at a time, so an older answer never lands after a newer one.
       const lock = yield* Semaphore.make(1)
-      // Reports whether the answer changed, so unrelated events don't reload web search.
-      const refresh = ctx.integration.connection.active(id).pipe(
-        Effect.map((connection) => {
-          const previous = connected.current
-          connected.current = connection !== undefined
-          return previous !== connected.current
-        }),
-        lock.withPermits(1),
+      const lookup = ctx.integration.connection.active(id).pipe(
+        Effect.map((connection) => void (connected.current = connection !== undefined)),
       )
-      // Handles one key change. A failure in the lookup or the reload is logged and dropped, so later changes are
-      // still handled. Unloading the plugin interrupts this fiber itself, which no catch sees, so this only catches
-      // failures and interruptions coming from the host calls.
-      const update = refresh.pipe(
-        Effect.flatMap((changed) => (changed ? ctx.websearch.reload() : Effect.void)),
-        Effect.catchCause((cause) => Effect.logWarning("Nimble could not apply an API key change", cause)),
-      )
+      // Reloads web search only when its answer is out of date, so unrelated events don't reload it.
+      const apply = Effect.gen(function* () {
+        yield* lookup
+        const answer = connected.current
+        if (answer === applied.current) return
+        yield* ctx.websearch.reload()
+        applied.current = answer
+      }).pipe(lock.withPermits(1))
+      // Handles one key change. A failed lookup or reload is logged and retried with a backoff, then dropped, so later
+      // changes are still handled. Unloading the plugin interrupts this fiber itself, which Effect.exit doesn't
+      // capture, so only failures and interruptions coming from the host calls are logged.
+      const update = Effect.gen(function* () {
+        for (let attempt = 0; attempt <= retries; attempt++) {
+          if (attempt > 0) yield* Effect.sleep(retryDelay(attempt))
+          const exit = yield* Effect.exit(apply)
+          if (Exit.isSuccess(exit)) return
+          yield* Effect.logWarning("Nimble could not apply an API key change", exit.cause)
+        }
+      })
       // OpenCode publishes credential.switched whenever the active key changes, including the first add and the
       // last removal. An env key counts once the env method is registered, which integration.updated announces.
       // Subscribing happens as the stream starts, so fork it before reading: a change in between still triggers an
@@ -63,31 +75,35 @@ export default Plugin.define({
       // OpenCode ends the stream normally; unloading the plugin interrupts it at once, even mid-sleep or mid-lookup.
       const watch = Effect.gen(function* () {
         for (let attempt = 0; ; attempt++) {
-          if (attempt > 0) yield* Effect.sleep(resubscribeDelay(attempt))
+          if (attempt > 0) yield* Effect.sleep(retryDelay(attempt))
           const exit = yield* Effect.exit(subscribe(attempt > 0))
           if (Exit.isSuccess(exit)) return
           yield* Effect.logWarning("Nimble lost its subscription to API key changes and will resubscribe", exit.cause)
         }
       })
       yield* watch.pipe(Effect.forkScoped({ startImmediately: true }))
-      yield* refresh
 
-      yield* ctx.websearch.transform((editor) => {
-        if (!connected.current) return
-        editor.add({
-          id,
-          name: "Nimble",
-          execute: (input) =>
-            Effect.gen(function* () {
-              const connection = yield* ctx.integration.connection.active(id)
-              const credential = connection ? yield* ctx.integration.connection.resolve(connection) : undefined
-              return yield* search({
-                query: input.query,
-                key: credential?.type === "key" ? credential.key : undefined,
-                userAgent: `opencode/${ctx.app.channel}/${ctx.app.version}/${ctx.app.name}`,
-              })
-            }).pipe(Effect.provide(FetchHttpClient.layer)),
+      // Web search loads this transform once the plugin has loaded, with the answer read here.
+      yield* Effect.gen(function* () {
+        yield* lookup
+        yield* ctx.websearch.transform((editor) => {
+          if (!connected.current) return
+          editor.add({
+            id,
+            name: "Nimble",
+            execute: (input) =>
+              Effect.gen(function* () {
+                const connection = yield* ctx.integration.connection.active(id)
+                const credential = connection ? yield* ctx.integration.connection.resolve(connection) : undefined
+                return yield* search({
+                  query: input.query,
+                  key: credential?.type === "key" ? credential.key : undefined,
+                  userAgent: `opencode/${ctx.app.channel}/${ctx.app.version}/${ctx.app.name}`,
+                })
+              }).pipe(Effect.provide(FetchHttpClient.layer)),
+          })
         })
-      })
+        applied.current = connected.current
+      }).pipe(lock.withPermits(1))
     }),
 })
