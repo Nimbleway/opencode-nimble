@@ -16,7 +16,7 @@ export const retryDelay = (attempt: number) =>
 export const retries = 3
 
 export default Plugin.define({
-  id: "nimble",
+  id,
   effect: (ctx) =>
     Effect.gen(function* () {
       // A Nimble integration in /connect, with the key from /connect or NIMBLE_API_KEY.
