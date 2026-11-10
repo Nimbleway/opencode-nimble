@@ -13,8 +13,8 @@ const keyState = (ctx: Plugin.Context, id: string) =>
   Effect.gen(function* () {
     const connected = { current: false }
     // The answer this plugin last applied: the startup answer, then each successful reload's. It is unknown after a
-    // failed reload, since OpenCode may have rebuilt web search before the reload failed, so the next try reloads
-    // whatever the lookup finds.
+    // failed startup lookup, and after a failed reload, since OpenCode may have rebuilt web search before the reload
+    // failed, so the next try reloads whatever the lookup finds.
     const applied: { current: boolean | undefined } = { current: false }
     // One lookup and reload at a time, so an older answer never lands after a newer one.
     const lock = yield* Semaphore.make(1)
@@ -76,8 +76,8 @@ const watch = (ctx: Plugin.Context, id: string, update: Effect.Effect<void>) => 
 }
 
 /**
- * Follows whether a key is connected for integration `id` and reloads web search when that changes, for as long as the
- * plugin's scope lasts. `register` runs once with the startup answer and a live view of the latest one.
+ * Follows whether a key is connected for integration `id` and reloads web search when that changes, until the plugin's
+ * scope closes or OpenCode ends the event stream. `register` runs once with a live view of the latest answer.
  */
 export const watchKey = <E, R>(
   ctx: Plugin.Context,
@@ -89,7 +89,7 @@ export const watchKey = <E, R>(
     yield* watch(ctx, id, key.update).pipe(Effect.forkScoped({ startImmediately: true }))
     // The startup lookup and registration hold the same lock as later lookups and reloads, so an event that arrives
     // meanwhile is applied after them. A failed lookup doesn't stop the plugin loading: it registers without a key,
-    // leaves the applied answer unknown and retries 1, 2 and 4 seconds later, until the plugin unloads.
+    // leaves the applied answer unknown and retries, 1, 2 and 4 seconds apart, unless the plugin unloads first.
     const startup = yield* Effect.gen(function* () {
       const exit = yield* Effect.exit(key.lookup)
       yield* register(() => key.connected.current)
