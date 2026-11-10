@@ -1,7 +1,7 @@
 import { Duration, Effect } from "effect"
 import { TestClock } from "effect/testing"
 import { describe, expect, it } from "vitest"
-import { retryDelay } from "../src/index.js"
+import { retryDelay } from "../src/watcher.js"
 import { captureLogs, KEY, loaded, run, settle } from "./helpers.js"
 import { eventually } from "./host.js"
 

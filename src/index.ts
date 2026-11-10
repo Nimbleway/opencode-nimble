@@ -4,8 +4,7 @@ import { FetchHttpClient } from "effect/http"
 import { MissingKeyError, search } from "./search.js"
 import { watchKey } from "./watcher.js"
 
-export { endpoint, MissingKeyError, timeout, TimeoutError } from "./search.js"
-export { retries, retryDelay } from "./watcher.js"
+export { endpoint, MissingKeyError, TimeoutError } from "./search.js"
 
 export const id = "nimble"
 export const env = "NIMBLE_API_KEY"
