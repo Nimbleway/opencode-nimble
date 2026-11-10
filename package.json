@@ -23,23 +23,40 @@
     "tool"
   ],
   "files": [
-    "dist"
+    "dist",
+    "src"
   ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "default": "./dist/index.mjs"
+      "default": "./dist/index.js"
     }
   },
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.mjs"
+    "prepare": "tsc",
+    "typecheck": "tsc -p tsconfig.tests.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "peerDependencies": {
+    "@opencode/plugin": ">=2.2.5 <3",
+    "effect": "^4.0.6"
+  },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": {
+      "optional": true
+    },
+    "effect": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@opencode/plugin": "^2.2.5",
     "@types/node": "^24.0.0",
-    "typescript": "^5.9.0"
+    "effect": "4.1.0",
+    "typescript": "^5.9.0",
+    "vitest": "^5.1.0"
   },
   "engines": {
     "opencode": ">=2.2.5",

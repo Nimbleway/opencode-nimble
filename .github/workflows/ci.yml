@@ -23,3 +23,9 @@ jobs:
       - run: pnpm run typecheck
 
       - run: pnpm test
+
+      # Fails if the package would ship without its entry.
+      - run: pnpm pack --dry-run | grep -q dist/index.js
+
+      # Fails if package.json exports don't resolve to a built entry with the plugin's default export.
+      - run: node --input-type=module -e 'const m = await import("@nimble-way/opencode"); if (m.default?.id !== "nimble") throw new Error("@nimble-way/opencode default export is not the nimble plugin")'
