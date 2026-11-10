@@ -12,8 +12,8 @@ export const retries = 3
 const keyState = (ctx: Plugin.Context, id: string) =>
   Effect.gen(function* () {
     const connected = { current: false }
-    // The answer this plugin last applied: the startup answer, then each successful reload's. It is unknown after a
-    // failed startup lookup, and after a failed reload, since OpenCode may have rebuilt web search before the reload
+    // The answer this plugin last applied: the startup answer (no key if that lookup failed), then each successful
+    // reload's. It is unknown after a failed reload, since OpenCode may have rebuilt web search before the reload
     // failed, so the next try reloads whatever the lookup finds.
     const applied: { current: boolean | undefined } = { current: false }
     // One lookup and reload at a time, so an older answer never lands after a newer one.
@@ -88,12 +88,12 @@ export const watchKey = <E, R>(
     const key = yield* keyState(ctx, id)
     yield* watch(ctx, id, key.update).pipe(Effect.forkScoped({ startImmediately: true }))
     // The startup lookup and registration hold the same lock as later lookups and reloads, so an event that arrives
-    // meanwhile is applied after them. A failed lookup doesn't stop the plugin loading: it registers without a key,
-    // leaves the applied answer unknown and retries, 1, 2 and 4 seconds apart, unless the plugin unloads first.
+    // meanwhile is applied after them. A failed lookup doesn't stop the plugin loading: it registers without a key
+    // and retries, 1, 2 and 4 seconds apart, unless the plugin unloads first.
     const startup = yield* Effect.gen(function* () {
       const exit = yield* Effect.exit(key.lookup)
       yield* register(() => key.connected.current)
-      key.applied.current = Exit.isSuccess(exit) ? key.connected.current : undefined
+      key.applied.current = key.connected.current
       return exit
     }).pipe(key.lock.withPermits(1))
     if (Exit.isSuccess(startup)) return
