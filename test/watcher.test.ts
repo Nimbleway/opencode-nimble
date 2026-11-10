@@ -51,6 +51,53 @@ describe("key watcher failures", () => {
     )
   })
 
+  it("loads when the startup lookup fails, logs it and retries 1 second later", () => {
+    const { logs, layer } = captureLogs()
+    return run(
+      Effect.gen(function* () {
+        const host = yield* loaded(KEY, (host) => void (host.failActive = 1))
+        expect(host.integrations().get("nimble")?.name).toBe("Nimble")
+        yield* settle
+        expect(logs.map((log) => log.message)).toEqual(["Nimble could not read its API key at startup and will retry"])
+        expect(logs[0]!.cause).toContain("connection lookup failed")
+        expect(host.providers()).toEqual([])
+        yield* TestClock.adjust("999 millis")
+        yield* settle
+        expect(host.reloads()).toBe(0)
+        yield* TestClock.adjust("1 millis")
+        yield* settle
+        expect(host.providers().map((provider) => provider.id)).toEqual(["nimble"])
+        expect(host.reloads()).toBe(1)
+        expect(logs).toHaveLength(1)
+        expect(JSON.stringify(logs)).not.toContain(KEY)
+      }).pipe(Effect.provide(layer), Effect.provide(TestClock.layer())),
+    )
+  })
+
+  it("applies the key on the next event after every startup retry fails", () => {
+    const { logs, layer } = captureLogs()
+    return run(
+      Effect.gen(function* () {
+        const host = yield* loaded(KEY, (host) => void (host.failActive = 4))
+        yield* settle
+        for (const wait of ["1 second", "2 seconds", "4 seconds", "1 minute"] as const) {
+          yield* TestClock.adjust(wait)
+          yield* settle
+        }
+        expect(host.activeCalls()).toBe(4)
+        expect(logs.map((log) => log.message)).toEqual([
+          "Nimble could not read its API key at startup and will retry",
+          ...Array(3).fill("Nimble could not apply an API key change"),
+        ])
+        expect(host.providers()).toEqual([])
+        yield* host.publish({ type: "integration.updated", data: {} })
+        yield* settle
+        expect(host.providers().map((provider) => provider.id)).toEqual(["nimble"])
+        expect(host.reloads()).toBe(1)
+      }).pipe(Effect.provide(layer), Effect.provide(TestClock.layer())),
+    )
+  })
+
   it("resubscribes after the event stream fails and catches up on missed changes", () => {
     const { logs, layer } = captureLogs()
     return run(
@@ -265,11 +312,15 @@ describe("key watcher failures", () => {
     ))
 
   describe("unloading stops the watcher at once, without a log", () => {
-    const unload = (setup: (host: FakeHost) => Effect.Effect<void>, hung = false) => {
+    const unload = (
+      setup: (host: FakeHost) => Effect.Effect<void>,
+      options: { hung?: boolean; key?: string; prepare?: (host: FakeHost) => void } = {},
+    ) => {
       const { logs, layer } = captureLogs()
       return Effect.runPromise(
         Effect.gen(function* () {
-          const host = yield* makeHost()
+          const host = yield* makeHost({ key: options.key })
+          options.prepare?.(host)
           const scope = yield* Scope.make()
           yield* plugin.effect(host.ctx).pipe(Scope.provide(scope))
           yield* setup(host)
@@ -283,7 +334,7 @@ describe("key watcher failures", () => {
           expect(host.subscriptions()).toBe(before.subscriptions)
           expect(host.activeCalls()).toBe(before.activeCalls)
           expect(host.reloads()).toBe(0)
-          expect(host.hungInterrupted()).toBe(hung ? 1 : 0)
+          expect(host.hungInterrupted()).toBe(options.hung ? 1 : 0)
           // Nothing logged by the unload itself (a subscription failure set up earlier is logged before it).
           expect(logs.slice(before.logs)).toEqual([])
         }).pipe(Effect.provide(layer), Effect.provide(TestClock.layer())),
@@ -305,8 +356,10 @@ describe("key watcher failures", () => {
             host.hangActive = true
             yield* host.publish({ type: "integration.updated", data: {} })
           }),
-        true,
+        { hung: true },
       ))
+    it("while waiting to retry a failed lookup at startup", () =>
+      unload(() => Effect.void, { key: KEY, prepare: (host) => void (host.failActive = 1) }))
   })
 
   it("stops watching when OpenCode ends the event stream normally", () => {

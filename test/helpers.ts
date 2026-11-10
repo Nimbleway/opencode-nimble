@@ -3,7 +3,7 @@ import { FetchHttpClient } from "effect/http"
 import type { WebSearch } from "@opencode/plugin"
 import { expect } from "vitest"
 import plugin from "../src/index.js"
-import { makeHost } from "./host.js"
+import { type FakeHost, makeHost } from "./host.js"
 
 export const KEY = "test-key-not-real"
 
@@ -30,10 +30,11 @@ export const fakeFetch = (respond: (request: Captured) => Promise<Response> | Re
 export const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 
-/** Loads the plugin against a fake host and returns its Nimble provider, which needs a key to exist. */
-export const loaded = (key: string | undefined) =>
+/** Loads the plugin against a fake host with `key` saved, after `prepare` sets up the host, and returns the host. */
+export const loaded = (key: string | undefined, prepare?: (host: FakeHost) => void) =>
   Effect.gen(function* () {
     const host = yield* makeHost({ key })
+    prepare?.(host)
     yield* plugin.effect(host.ctx)
     return host
   })

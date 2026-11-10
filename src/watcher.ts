@@ -32,16 +32,18 @@ const keyState = (ctx: Plugin.Context, id: string) =>
     }).pipe(lock.withPermits(1))
     // Handles one key change. A failed lookup or reload is logged and retried with a backoff, then dropped, so later
     // changes are still handled. Unloading the plugin interrupts this fiber itself, which Effect.exit doesn't
-    // capture, so only failures and interruptions coming from the host calls are logged.
-    const update = Effect.gen(function* () {
-      for (let attempt = 0; attempt <= retries; attempt++) {
-        if (attempt > 0) yield* Effect.sleep(retryDelay(attempt))
-        const exit = yield* Effect.exit(apply)
-        if (Exit.isSuccess(exit)) return
-        yield* Effect.logWarning("Nimble could not apply an API key change", exit.cause)
-      }
-    })
-    return { connected, applied, lock, lookup, update }
+    // capture, so only failures and interruptions coming from the host calls are logged. `retry` skips the first
+    // try, for a lookup that already failed.
+    const attempts = (first: number) =>
+      Effect.gen(function* () {
+        for (let attempt = first; attempt <= retries; attempt++) {
+          if (attempt > 0) yield* Effect.sleep(retryDelay(attempt))
+          const exit = yield* Effect.exit(apply)
+          if (Exit.isSuccess(exit)) return
+          yield* Effect.logWarning("Nimble could not apply an API key change", exit.cause)
+        }
+      })
+    return { connected, applied, lock, lookup, update: attempts(0), retry: attempts(1) }
   })
 
 /** Runs `update` on every key change until OpenCode ends the event stream. */
@@ -86,10 +88,15 @@ export const watchKey = <E, R>(
     const key = yield* keyState(ctx, id)
     yield* watch(ctx, id, key.update).pipe(Effect.forkScoped({ startImmediately: true }))
     // The startup lookup and registration hold the same lock as later lookups and reloads, so an event that arrives
-    // meanwhile is applied after them.
-    yield* Effect.gen(function* () {
-      yield* key.lookup
+    // meanwhile is applied after them. A failed lookup doesn't stop the plugin loading: it registers without a key,
+    // leaves the applied answer unknown and retries 1, 2 and 4 seconds later, until the plugin unloads.
+    const startup = yield* Effect.gen(function* () {
+      const exit = yield* Effect.exit(key.lookup)
       yield* register(() => key.connected.current)
-      key.applied.current = key.connected.current
+      key.applied.current = Exit.isSuccess(exit) ? key.connected.current : undefined
+      return exit
     }).pipe(key.lock.withPermits(1))
+    if (Exit.isSuccess(startup)) return
+    yield* Effect.logWarning("Nimble could not read its API key at startup and will retry", startup.cause)
+    yield* key.retry.pipe(Effect.forkScoped({ startImmediately: true }))
   })
