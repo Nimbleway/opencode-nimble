@@ -30,11 +30,18 @@ export class TimeoutError extends Error {
   }
 }
 
+export class MissingKeyError extends Error {
+  constructor() {
+    super("No Nimble API key is connected")
+    this.name = "NimbleMissingKeyError"
+  }
+}
+
 /**
  * Runs one Nimble search at standard depth. Non-2xx responses fail with effect's HttpClientError, which OpenCode
  * reads to report 401s and to move `random` web search to another provider after a 429.
  */
-export const search = (input: { readonly query: string; readonly key: string | undefined; readonly userAgent: string }) =>
+export const search = (input: { readonly query: string; readonly key: string; readonly userAgent: string }) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
     const request = yield* HttpClientRequest.post(endpoint).pipe(
@@ -42,7 +49,7 @@ export const search = (input: { readonly query: string; readonly key: string | u
       HttpClientRequest.setHeaders({
         "User-Agent": input.userAgent,
         "X-Client-Source": "opencode",
-        ...(input.key ? { Authorization: `Bearer ${input.key}` } : {}),
+        Authorization: `Bearer ${input.key}`,
       }),
       HttpClientRequest.schemaBodyJson(SearchRequest)({
         query: input.query,

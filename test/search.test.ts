@@ -2,9 +2,9 @@ import { Effect, Fiber } from "effect"
 import { FetchHttpClient, HttpClientError } from "effect/http"
 import { TestClock } from "effect/testing"
 import { describe, expect, it } from "vitest"
-import { endpoint, TimeoutError } from "../src/index.js"
+import { endpoint, MissingKeyError, TimeoutError } from "../src/index.js"
 import { fakeFetch, json, KEY, loaded, run, searchWith } from "./helpers.js"
-import { eventually } from "./host.js"
+import { eventually, type FakeHost } from "./host.js"
 
 const nimbleResults = {
   request_id: "req_1",
@@ -118,6 +118,27 @@ describe("errors", () => {
         expect((error as HttpClientError.HttpClientError).response?.headers["retry-after"]).toBe("30")
       }),
     ))
+
+  // The provider list can lag behind a removed key, and a search can start just before the key goes.
+  describe("fails without sending a request when the key is gone", () => {
+    const searchAfter = (remove: (host: FakeHost) => void) =>
+      Effect.gen(function* () {
+        const { fetch, requests } = fakeFetch(() => json(nimbleResults))
+        const host = yield* loaded(KEY)
+        const [provider] = host.providers()
+        remove(host)
+        const error = yield* provider!.execute({ query: "q" }).pipe(
+          Effect.provideService(FetchHttpClient.Fetch, fetch),
+          Effect.flip,
+        )
+        expect(error).toBeInstanceOf(MissingKeyError)
+        expect((error as Error).message).toBe("No Nimble API key is connected")
+        expect(requests).toHaveLength(0)
+      })
+    it("before the search reads the connection", () => run(searchAfter((host) => void (host.key = undefined))))
+    it("between reading the connection and resolving it", () =>
+      run(searchAfter((host) => void (host.onActive = () => Effect.sync(() => void (host.key = undefined))))))
+  })
 
   it("times out after 25 seconds and aborts the request", () =>
     run(

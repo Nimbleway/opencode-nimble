@@ -1,10 +1,10 @@
 import { Plugin } from "@opencode/plugin/effect"
 import { Effect } from "effect"
 import { FetchHttpClient } from "effect/http"
-import { search } from "./search.js"
+import { MissingKeyError, search } from "./search.js"
 import { watchKey } from "./watcher.js"
 
-export { endpoint, timeout, TimeoutError } from "./search.js"
+export { endpoint, MissingKeyError, timeout, TimeoutError } from "./search.js"
 export { retries, retryDelay } from "./watcher.js"
 
 export const id = "nimble"
@@ -34,9 +34,11 @@ export default Plugin.define({
               Effect.gen(function* () {
                 const connection = yield* ctx.integration.connection.active(id)
                 const credential = connection ? yield* ctx.integration.connection.resolve(connection) : undefined
+                // The key can go between the provider list and this search, so never send a search without one.
+                if (credential?.type !== "key") return yield* Effect.fail(new MissingKeyError())
                 return yield* search({
                   query: input.query,
-                  key: credential?.type === "key" ? credential.key : undefined,
+                  key: credential.key,
                   userAgent: `opencode/${ctx.app.channel}/${ctx.app.version}/${ctx.app.name}`,
                 })
               }).pipe(Effect.provide(FetchHttpClient.layer)),
