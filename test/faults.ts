@@ -66,17 +66,19 @@ export const makeFaults = <Event>(events: PubSub.PubSub<Event | Control>) => {
         }
         return reload
       }),
-    /** Turns the control entries in a subscription's stream into a failure, an interruption or its end. */
-    subscription: (stream: Stream.Stream<Event | Control>) =>
-      stream.pipe(
-        Stream.takeWhile((event) => event !== "end"),
-        Stream.mapEffect((event) =>
-          event === "fault"
-            ? Effect.fail(new Error("event stream lost"))
-            : event === "interrupt"
-              ? Effect.interrupt
-              : Effect.succeed(event as Event),
-        ),
-      ),
+    subscription: subscription<Event>,
   }
 }
+
+/** Turns the control entries in a subscription's stream into a failure, an interruption or its end. */
+const subscription = <Event>(stream: Stream.Stream<Event | Control>) =>
+  stream.pipe(
+    Stream.takeWhile((event) => event !== "end"),
+    Stream.mapEffect((event) =>
+      event === "fault"
+        ? Effect.fail(new Error("event stream lost"))
+        : event === "interrupt"
+          ? Effect.interrupt
+          : Effect.succeed(event as Event),
+    ),
+  )
