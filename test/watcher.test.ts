@@ -125,6 +125,20 @@ describe("key watcher failures", () => {
     )
   })
 
+  it("subscribes before the catch-up read, so a change made during that read is not missed", () =>
+    run(
+      Effect.gen(function* () {
+        const host = yield* loaded(undefined)
+        yield* host.failSubscriptions()
+        yield* settle
+        host.onActive = () => host.connect(KEY)
+        yield* TestClock.adjust("1 second")
+        yield* settle
+        expect(host.subscriptions()).toBe(2)
+        expect(host.providers().map((provider) => provider.id)).toEqual(["nimble"])
+      }).pipe(Effect.provide(TestClock.layer())),
+    ))
+
   it("waits 1 second, then 2 seconds, before resubscribing after repeated failures", () =>
     run(
       Effect.gen(function* () {
